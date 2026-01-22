@@ -2,18 +2,22 @@ import os
 import asyncio
 import logging
 import requests
-import threading
 from datetime import datetime
 from dotenv import load_dotenv
-from flask import Flask
+from flask import Flask, request
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+)
 
 # ================= ENV =================
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TRAIN_API_URL = os.getenv("TRAIN_API_URL")
 PORT = int(os.environ.get("PORT", 10000))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g. https://your-app.onrender.com
 
 # ================= LOGGING =================
 logging.basicConfig(
@@ -48,32 +52,48 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "🚆 Bot is running!"
+    return "🚆 Train Live Bot is running!"
 
-# ================= TELEGRAM BOT =================
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), bot_app.bot)
+    asyncio.run(bot_app.process_update(update))
+    return "ok"
+
+# ================= TELEGRAM COMMANDS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🚆 *Train Live Bot*\n\n"
-        "/addtrain <train_no> - Track a train\n"
-        "/removetrain - Stop tracking\n"
-        "/status - See active trains",
+        "Main aapko live train status batata hoon.\n\n"
+        "🧾 *Commands Guide*\n"
+        "➡️ `/addtrain <train_no>`\n"
+        "• Train ko track karna start kare\n"
+        "• Har 1 minute me auto update milega\n\n"
+        "➡️ `/removetrain`\n"
+        "• Current train tracking band kare\n\n"
+        "➡️ `/status`\n"
+        "• Check kare kaunsa train active hai\n\n"
+        "📌 Example:\n"
+        "`/addtrain 12303`\n\n"
+        "Happy Journey 🚄",
         parse_mode="Markdown"
     )
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not active_trains:
-        await update.message.reply_text("🤖 Bot is running but no trains are being tracked.")
+        await update.message.reply_text("🤖 Abhi koi train track nahi ho rahi.")
         return
 
-    text = "🤖 *Bot Active Trains:*\n\n"
-    for chat, train_no in active_trains.items():
-        text += f"Chat ID {chat}: Train {train_no}\n"
+    text = "🤖 *Active Trains:*\n\n"
+    for chat, train in active_trains.items():
+        text += f"• Chat `{chat}` → Train `{train}`\n"
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def add_train(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+
     if not context.args:
-        await update.message.reply_text("❌ Usage: /addtrain <train_no>")
+        await update.message.reply_text("❌ Usage: `/addtrain 12303`", parse_mode="Markdown")
         return
 
     train_no = context.args[0].strip()
@@ -98,10 +118,11 @@ async def add_train(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name=str(chat_id)
     )
 
-    await update.message.reply_text(f"✅ Tracking Train {train_no}")
+    await update.message.reply_text(f"✅ Train `{train_no}` tracking started", parse_mode="Markdown")
 
 async def remove_train(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+
     active_trains.pop(chat_id, None)
 
     for job in context.job_queue.get_jobs_by_name(str(chat_id)):
@@ -112,7 +133,7 @@ async def remove_train(update: Update, context: ContextTypes.DEFAULT_TYPE):
         animation_tasks.pop(chat_id, None)
 
     message_ids.pop(chat_id, None)
-    await update.message.reply_text("🗑️ Tracking stopped")
+    await update.message.reply_text("🗑️ Train tracking stopped")
 
 # ================= FETCH & RENDER =================
 async def fetch_and_render(context: ContextTypes.DEFAULT_TYPE):
@@ -131,95 +152,62 @@ async def fetch_and_render(context: ContextTypes.DEFAULT_TYPE):
         route = info["route"]
         pos = info["currentPosition"]
         code = pos.get("stationCode")
+
         idx = next(i for i, s in enumerate(route) if s["stationCode"] == code)
         cur = route[idx]
         prev = route[idx - 1] if idx > 0 else None
         nxt = route[idx + 1] if idx < len(route) - 1 else None
 
-        base_text = (
+        text = (
             f"🚆 *Train {train_no}*\n\n"
             f"📍 *Current Station*\n"
             f"{cur['station_name']}\n"
             f"🕒 Reached: {fmt_time(cur.get('actualArrivalTime'))}\n"
-            f"📏 Distance Covered: {round(pos.get('distanceFromOriginKm',0),2)} km\n\n"
+            f"📏 Distance: {round(pos.get('distanceFromOriginKm',0),2)} km\n\n"
         )
 
         if prev:
-            base_text += (
+            text += (
                 f"⬅️ *Previous Station*\n"
                 f"{prev['station_name']}\n"
-                f"🚉 Departed: {fmt_time(prev.get('actualDepartureTime'))}\n"
-                f"🛤️ Platform: {prev.get('platformNumber','N/A')}\n\n"
+                f"🚉 Departed: {fmt_time(prev.get('actualDepartureTime'))}\n\n"
             )
+
         if nxt:
-            base_text += (
+            text += (
                 f"➡️ *Next Station*\n"
                 f"{nxt['station_name']}\n"
                 f"⏰ Expected: {fmt_time(nxt.get('actualArrivalTime'))}\n"
                 f"🕒 Scheduled: {fmt_time(nxt.get('scheduledArrivalTime'))}\n"
                 f"⏱️ Delay: {delay_hm(nxt.get('actualArrivalTime'), nxt.get('scheduledArrivalTime'))}\n"
-                f"🛤️ Platform: {nxt.get('platformNumber','N/A')}\n"
             )
 
         if chat_id not in message_ids:
-            msg = await context.bot.send_message(chat_id, base_text, parse_mode="Markdown")
+            msg = await context.bot.send_message(chat_id, text, parse_mode="Markdown")
             message_ids[chat_id] = msg.message_id
         else:
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_ids[chat_id],
-                    text=base_text,
-                    parse_mode="Markdown"
-                )
-            except:
-                msg = await context.bot.send_message(chat_id, base_text, parse_mode="Markdown")
-                message_ids[chat_id] = msg.message_id
-
-        # Animation
-        if chat_id not in animation_tasks:
-            task = asyncio.create_task(animate_message(context, chat_id, base_text))
-            animation_tasks[chat_id] = task
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_ids[chat_id],
+                text=text,
+                parse_mode="Markdown"
+            )
 
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"Fetch error: {e}")
 
-# ================= ANIMATION =================
-async def animate_message(context, chat_id, base_text):
-    frames = [("📍","⬅️ .","➡️"),("📍➤","⬅️ . .","➡️➡️"),("📍➤📍","⬅️ . . .","➡️➡️➡️")]
-    try:
-        while True:
-            for c,p,n in frames:
-                animated = base_text.replace("📍 *Current Station*", f"{c} *Current Station*")\
-                                    .replace("⬅️ *Previous Station*", f"{p} *Previous Station*")\
-                                    .replace("➡️ *Next Station*", f"{n} *Next Station*")
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_ids[chat_id],
-                    text=animated,
-                    parse_mode="Markdown"
-                )
-                await asyncio.sleep(1)
-    except asyncio.CancelledError:
-        return
-    except Exception as e:
-        logger.error(f"Animation error: {e}")
-
-# ================= START BOT THREAD =================
-def start_bot():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("status", status))
-    bot_app.add_handler(CommandHandler("addtrain", add_train))
-    bot_app.add_handler(CommandHandler("removetrain", remove_train))
-    bot_app.run_polling()
+# ================= BOT INIT =================
+bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+bot_app.add_handler(CommandHandler("start", start))
+bot_app.add_handler(CommandHandler("status", status))
+bot_app.add_handler(CommandHandler("addtrain", add_train))
+bot_app.add_handler(CommandHandler("removetrain", remove_train))
 
 # ================= RUN =================
 if __name__ == "__main__":
-    # Start bot in background thread
-    threading.Thread(target=start_bot).start()
+    async def setup():
+        await bot_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
+        logger.info("Webhook set successfully")
 
-    # Run Flask app (Render expects port binding)
+    asyncio.run(setup())
     app.run(host="0.0.0.0", port=PORT)
