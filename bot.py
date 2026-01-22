@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder,
+    Application,
     CommandHandler,
     ContextTypes,
 )
@@ -16,20 +16,15 @@ from telegram.ext import (
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TRAIN_API_URL = os.getenv("TRAIN_API_URL")
-PORT = int(os.environ.get("PORT", 10000))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g. https://your-app.onrender.com
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://your-app.onrender.com
 
 # ================= LOGGING =================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ================= GLOBALS =================
-active_trains = {}      # chat_id -> train_no
-message_ids = {}        # chat_id -> message_id
-animation_tasks = {}    # chat_id -> asyncio.Task
+active_trains = {}
+message_ids = {}
 
 # ================= UTILS =================
 def fmt_time(ts):
@@ -49,93 +44,67 @@ def delay_hm(actual, scheduled):
 
 # ================= FLASK =================
 app = Flask(__name__)
+bot_app = Application.builder().token(BOT_TOKEN).build()
 
 @app.route("/")
 def home():
-    return "🚆 Train Live Bot is running!"
+    return "🚆 Train Live Bot Running"
 
 @app.route("/webhook", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), bot_app.bot)
-    asyncio.run(bot_app.process_update(update))
+async def webhook():
+    update = Update.de_json(request.json, bot_app.bot)
+    await bot_app.process_update(update)
     return "ok"
 
-# ================= TELEGRAM COMMANDS =================
+# ================= COMMANDS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚆 *Train Live Bot*\n\n"
-        "Main aapko live train status batata hoon.\n\n"
-        "🧾 *Commands Guide*\n"
-        "➡️ `/addtrain <train_no>`\n"
-        "• Train ko track karna start kare\n"
-        "• Har 1 minute me auto update milega\n\n"
-        "➡️ `/removetrain`\n"
-        "• Current train tracking band kare\n\n"
-        "➡️ `/status`\n"
-        "• Check kare kaunsa train active hai\n\n"
-        "📌 Example:\n"
-        "`/addtrain 12303`\n\n"
-        "Happy Journey 🚄",
+        "🚆 Train Live Bot\n\n"
+        "Use `/addtrain <train_no>` to track train",
         parse_mode="Markdown"
     )
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not active_trains:
-        await update.message.reply_text("🤖 Abhi koi train track nahi ho rahi.")
-        return
-
-    text = "🤖 *Active Trains:*\n\n"
-    for chat, train in active_trains.items():
-        text += f"• Chat `{chat}` → Train `{train}`\n"
-    await update.message.reply_text(text, parse_mode="Markdown")
+    chat_id = update.effective_chat.id
+    train = active_trains.get(chat_id)
+    if not train:
+        await update.message.reply_text("❌ No active train")
+    else:
+        await update.message.reply_text(f"✅ Tracking Train `{train}`", parse_mode="Markdown")
 
 async def add_train(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
     if not context.args:
-        await update.message.reply_text("❌ Usage: `/addtrain 12303`", parse_mode="Markdown")
+        await update.message.reply_text("Usage: `/addtrain 12303`", parse_mode="Markdown")
         return
 
-    train_no = context.args[0].strip()
+    train_no = context.args[0]
     active_trains[chat_id] = train_no
 
-    # Cancel old animation
-    if task := animation_tasks.get(chat_id):
-        task.cancel()
-        animation_tasks.pop(chat_id, None)
-
-    # Remove old jobs
     for job in context.job_queue.get_jobs_by_name(str(chat_id)):
         job.schedule_removal()
-
-    message_ids.pop(chat_id, None)
 
     context.job_queue.run_repeating(
         fetch_and_render,
         interval=60,
-        first=1,
+        first=2,
         chat_id=chat_id,
         name=str(chat_id)
     )
 
-    await update.message.reply_text(f"✅ Train `{train_no}` tracking started", parse_mode="Markdown")
+    await update.message.reply_text(f"🚆 Tracking Train `{train_no}`", parse_mode="Markdown")
 
 async def remove_train(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-
     active_trains.pop(chat_id, None)
 
     for job in context.job_queue.get_jobs_by_name(str(chat_id)):
         job.schedule_removal()
 
-    if task := animation_tasks.get(chat_id):
-        task.cancel()
-        animation_tasks.pop(chat_id, None)
+    await update.message.reply_text("🗑️ Tracking stopped")
 
-    message_ids.pop(chat_id, None)
-    await update.message.reply_text("🗑️ Train tracking stopped")
-
-# ================= FETCH & RENDER =================
+# ================= JOB =================
 async def fetch_and_render(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.chat_id
     train_no = active_trains.get(chat_id)
@@ -155,59 +124,37 @@ async def fetch_and_render(context: ContextTypes.DEFAULT_TYPE):
 
         idx = next(i for i, s in enumerate(route) if s["stationCode"] == code)
         cur = route[idx]
-        prev = route[idx - 1] if idx > 0 else None
         nxt = route[idx + 1] if idx < len(route) - 1 else None
 
         text = (
-            f"🚆 *Train {train_no}*\n\n"
-            f"📍 *Current Station*\n"
-            f"{cur['station_name']}\n"
-            f"🕒 Reached: {fmt_time(cur.get('actualArrivalTime'))}\n"
-            f"📏 Distance: {round(pos.get('distanceFromOriginKm',0),2)} km\n\n"
+            f"🚆 *Train {train_no}*\n"
+            f"📍 {cur['station_name']}\n"
+            f"🕒 {fmt_time(cur.get('actualArrivalTime'))}\n"
         )
 
-        if prev:
-            text += (
-                f"⬅️ *Previous Station*\n"
-                f"{prev['station_name']}\n"
-                f"🚉 Departed: {fmt_time(prev.get('actualDepartureTime'))}\n\n"
-            )
-
-        if nxt:
-            text += (
-                f"➡️ *Next Station*\n"
-                f"{nxt['station_name']}\n"
-                f"⏰ Expected: {fmt_time(nxt.get('actualArrivalTime'))}\n"
-                f"🕒 Scheduled: {fmt_time(nxt.get('scheduledArrivalTime'))}\n"
-                f"⏱️ Delay: {delay_hm(nxt.get('actualArrivalTime'), nxt.get('scheduledArrivalTime'))}\n"
-            )
-
-        if chat_id not in message_ids:
-            msg = await context.bot.send_message(chat_id, text, parse_mode="Markdown")
-            message_ids[chat_id] = msg.message_id
-        else:
+        if chat_id in message_ids:
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_ids[chat_id],
                 text=text,
                 parse_mode="Markdown"
             )
+        else:
+            msg = await context.bot.send_message(chat_id, text, parse_mode="Markdown")
+            message_ids[chat_id] = msg.message_id
 
     except Exception as e:
-        logger.error(f"Fetch error: {e}")
+        logger.error(e)
 
-# ================= BOT INIT =================
-bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+# ================= INIT =================
 bot_app.add_handler(CommandHandler("start", start))
 bot_app.add_handler(CommandHandler("status", status))
 bot_app.add_handler(CommandHandler("addtrain", add_train))
 bot_app.add_handler(CommandHandler("removetrain", remove_train))
 
-# ================= RUN =================
-if __name__ == "__main__":
-    async def setup():
-        await bot_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-        logger.info("Webhook set successfully")
+@app.before_serving
+async def startup():
+    await bot_app.initialize()
+    await bot_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
+    logger.info("Webhook set")
 
-    asyncio.run(setup())
-    app.run(host="0.0.0.0", port=PORT)
