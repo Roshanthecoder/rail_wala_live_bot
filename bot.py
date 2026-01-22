@@ -51,10 +51,13 @@ def home():
     return "🚆 Train Live Bot Running"
 
 @app.route("/webhook", methods=["POST"])
-async def webhook():
+def webhook():
     update = Update.de_json(request.json, bot_app.bot)
-    await bot_app.process_update(update)
+    asyncio.get_event_loop().create_task(
+        bot_app.process_update(update)
+    )
     return "ok"
+
 
 # ================= COMMANDS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -152,9 +155,11 @@ bot_app.add_handler(CommandHandler("status", status))
 bot_app.add_handler(CommandHandler("addtrain", add_train))
 bot_app.add_handler(CommandHandler("removetrain", remove_train))
 
-@app.before_serving
-async def startup():
+async def init_bot():
     await bot_app.initialize()
     await bot_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-    logger.info("Webhook set")
+    logger.info("Webhook set successfully")
+
+asyncio.get_event_loop().create_task(init_bot())
+
 
