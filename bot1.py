@@ -3,6 +3,7 @@ import asyncio
 import logging
 from datetime import datetime
 import json
+from datetime import datetime, timezone, timedelta
 import requests
 from dotenv import load_dotenv
 
@@ -15,6 +16,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 TRAIN_API_URL = os.getenv("TRAIN_API_URL")
 PORT = int(os.environ.get("PORT", 8443))  # Render will provide this
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")    # e.g., https://your-app.onrender.com
+IST = timezone(timedelta(hours=5, minutes=30))
 
 # ================= LOGGING =================
 logging.basicConfig(
@@ -33,7 +35,7 @@ last_station_code = {}   # chat_id -> last station code
 def fmt_time(ts):
     if not ts:
         return "N/A"
-    return datetime.fromtimestamp(ts).strftime("%I:%M %p")
+    return datetime.fromtimestamp(ts, IST).strftime("%I:%M %p")
 
 def delay_from_secs(sec):
     if not sec or sec <= 0:
