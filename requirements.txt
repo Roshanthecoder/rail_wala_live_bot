@@ -2,5 +2,3 @@ flask
 python-telegram-bot
 requests
 python-dotenv
-uvicorn
-gunicorn

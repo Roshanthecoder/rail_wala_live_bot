@@ -72,7 +72,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "▶️ */addtrain <00000>*\n"
         "📊 */status*\n"
         "🛑 */removetrain*\n\n"
-        "⏱️ Auto updates every 1 minute",
+        "    *Made By Roshan ❤️️*\n",
         parse_mode="Markdown"
     )
 
