@@ -32,10 +32,13 @@ message_ids = {}         # chat_id -> message_id
 last_station_code = {}   # chat_id -> last station code
 
 # ================= UTILS =================
+
+
 def fmt_time(ts):
     if not ts:
         return "N/A"
     return datetime.fromtimestamp(ts, IST).strftime("%I:%M %p")
+
 
 def delay_from_secs(sec):
     if not sec or sec <= 0:
@@ -44,6 +47,7 @@ def delay_from_secs(sec):
     h = m // 60
     m = m % 60
     return f"{h} hour {m} minute late" if h else f"{m} minute late"
+
 
 def get_context(info):
     pos = info.get("currentPosition", {})
@@ -60,6 +64,8 @@ def get_context(info):
     return cur, prev, nxt
 
 # ================= COMMANDS =================
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.effective_user.first_name or "there"
     await update.message.reply_text(
@@ -72,12 +78,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     train = active_trains.get(update.effective_chat.id)
     await update.message.reply_text(
         f"✅ Tracking *{train}*" if train else "❌ No active train",
         parse_mode="Markdown"
     )
+
 
 async def add_train(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -95,6 +103,7 @@ async def add_train(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(f"🚆 Tracking Train *{train}*", parse_mode="Markdown")
     message_ids[chat_id] = msg.message_id
 
+
 async def remove_train(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
     active_trains.pop(cid, None)
@@ -107,7 +116,90 @@ async def remove_train(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_ids.pop(cid, None)
     await update.message.reply_text("🗑️ Tracking stopped")
 
-# ================= TRACK LOOP =================
+# # ================= TRACK LOOP =================
+# async def track_train(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+#     last_text = None
+#     while True:
+#         try:
+#             train = active_trains.get(chat_id)
+#             if not train:
+#                 return
+
+#             r = requests.get(TRAIN_API_URL, params={"trainNo": train}, timeout=10)
+#             json_data = r.json()
+#             if not json_data.get("success"):
+#                 await asyncio.sleep(15)
+#                 continue
+
+#             data = json_data.get("data", {})
+#             cur, prev, nxt = get_context(data)
+#             cur_code = data.get("currentPosition", {}).get("stationCode") if data.get("currentPosition") else None
+#             notify = last_station_code.get(chat_id) != cur_code
+#             last_station_code[chat_id] = cur_code
+
+#             platform = "N/A"
+#             if cur_code:
+#                 for s in data.get("route", []):
+#                     if s.get("stationCode") == cur_code:
+#                         platform = s.get("platformNumber", "N/A")
+#                         break
+
+#             current_loc_name = cur.get("station_name", "Unknown") if cur else "Unknown"
+#             dist = round(data.get("currentPosition", {}).get("distanceFromOriginKm", 0), 1)
+#             lastDist = round(data.get("currentPosition", {}).get("distanceFromLastStationKm", 0), 1)
+
+#             text = f"🚆 Train *{train}*\n"
+#             text += f"📍 Current Station: *{current_loc_name}*\n"
+#             text += f"📏Total Distance Covered: *{dist} km*\n"
+#             text += f"📏Last Distance Covered From Station: *{lastDist} km*\n\n"
+
+#             if prev:
+#                 text += (
+#                     "⬅️ Previous Station\n"
+#                     f"🏁 {prev.get('station_name', 'N/A')}\n"
+#                     f"🚉 Platform: {prev.get('platformNumber', 'N/A')}\n"
+#                     f"🕒 Chart Timing: {fmt_time(prev.get('scheduledArrivalTime'))}\n"
+#                     f"🕓 Actual Arrived: {fmt_time(prev.get('actualArrivalTime'))}\n"
+#                     f"⏱️ Delay: {delay_from_secs(prev.get('scheduledDepartureDelaySecs'))}\n\n"
+#                 )
+
+#             if nxt:
+#                 text += (
+#                     "➡️ Next Station\n"
+#                     f"🚉 {nxt.get('station_name', 'N/A')}\n"
+#                     f"🚉 Platform: {nxt.get('platformNumber', 'N/A')}\n"
+#                     f"🕒 Chart Timing: {fmt_time(nxt.get('scheduledArrivalTime'))}\n"
+#                     f"🕓 Expected Timing: {fmt_time(nxt.get('actualArrivalTime'))}\n"
+#                     f"⏱️ Delay: {delay_from_secs(nxt.get('scheduledDepartureDelaySecs'))}\n"
+#                 )
+
+#             # Send or edit full message
+#             if chat_id in message_ids:
+#                 if text != last_text:
+#                     await context.bot.edit_message_text(
+#                         chat_id=chat_id,
+#                         message_id=message_ids[chat_id],
+#                         text=text,
+#                         parse_mode="Markdown"
+#                     )
+#                     last_text = text
+#             else:
+#                 msg = await context.bot.send_message(
+#                     chat_id=chat_id,
+#                     text=text,
+#                     parse_mode="Markdown"
+#                 )
+#                 message_ids[chat_id] = msg.message_id
+#                 last_text = text
+
+#             await asyncio.sleep(4)
+#         except asyncio.CancelledError:
+#             return
+#         except Exception:
+#             logger.exception("Tracking error")
+#             await asyncio.sleep(20)
+
+
 async def track_train(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     last_text = None
     while True:
@@ -116,7 +208,8 @@ async def track_train(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
             if not train:
                 return
 
-            r = requests.get(TRAIN_API_URL, params={"trainNo": train}, timeout=10)
+            r = requests.get(TRAIN_API_URL, params={
+                             "trainNo": train}, timeout=10)
             json_data = r.json()
             if not json_data.get("success"):
                 await asyncio.sleep(15)
@@ -124,8 +217,26 @@ async def track_train(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
 
             data = json_data.get("data", {})
             cur, prev, nxt = get_context(data)
-            cur_code = data.get("currentPosition", {}).get("stationCode") if data.get("currentPosition") else None
+            cur_code = data.get("currentPosition", {}).get(
+                "stationCode") if data.get("currentPosition") else None
+
+            # Check if station changed
             notify = last_station_code.get(chat_id) != cur_code
+            if notify and cur_code:
+                # Send separate notification
+                station_name = cur.get(
+                    "station_name", "Unknown") if cur else "Unknown"
+                platform = cur.get("platformNumber", "N/A") if cur else "N/A"
+                delay = delay_from_secs(cur.get("scheduledDepartureDelaySecs"))
+
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"📢 Train *{train}* has reached *{station_name}*\n"
+                    f"🚉 Platform: {platform}\n"
+                    f"⏱️ Delay: {delay}",
+                    parse_mode="Markdown"
+                )
+
             last_station_code[chat_id] = cur_code
 
             platform = "N/A"
@@ -135,9 +246,12 @@ async def track_train(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
                         platform = s.get("platformNumber", "N/A")
                         break
 
-            current_loc_name = cur.get("station_name", "Unknown") if cur else "Unknown"
-            dist = round(data.get("currentPosition", {}).get("distanceFromOriginKm", 0), 1)
-            lastDist = round(data.get("currentPosition", {}).get("distanceFromLastStationKm", 0), 1)
+            current_loc_name = cur.get(
+                "station_name", "Unknown") if cur else "Unknown"
+            dist = round(data.get("currentPosition", {}).get(
+                "distanceFromOriginKm", 0), 1)
+            lastDist = round(data.get("currentPosition", {}).get(
+                "distanceFromLastStationKm", 0), 1)
 
             text = f"🚆 Train *{train}*\n"
             text += f"📍 Current Station: *{current_loc_name}*\n"
@@ -164,7 +278,7 @@ async def track_train(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
                     f"⏱️ Delay: {delay_from_secs(nxt.get('scheduledDepartureDelaySecs'))}\n"
                 )
 
-            # Send or edit full message
+            # Send or edit main live message
             if chat_id in message_ids:
                 if text != last_text:
                     await context.bot.edit_message_text(
@@ -191,6 +305,8 @@ async def track_train(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
             await asyncio.sleep(20)
 
 # ================= WEBHOOK HANDLER =================
+
+
 async def webhook(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         if update.message.text.startswith("/"):
@@ -199,6 +315,8 @@ async def webhook(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Send /addtrain <train_no> to track a train")
 
 # ================= MAIN =================
+
+
 def main():
     logger.info("🚀 Bot Started (Webhook Mode)")
     app = Application.builder().token(BOT_TOKEN).build()
@@ -219,6 +337,7 @@ def main():
         url_path="webhook",
         webhook_url=f"{WEBHOOK_URL}/webhook"
     )
+
 
 if __name__ == "__main__":
     main()
