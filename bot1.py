@@ -7,12 +7,14 @@ import requests
 from dotenv import load_dotenv
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 # ================= ENV =================
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TRAIN_API_URL = os.getenv("TRAIN_API_URL")
+PORT = int(os.environ.get("PORT", 8443))  # Render will provide this
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")    # e.g., https://your-app.onrender.com
 
 # ================= LOGGING =================
 logging.basicConfig(
@@ -28,12 +30,6 @@ message_ids = {}         # chat_id -> message_id
 last_station_code = {}   # chat_id -> last station code
 
 # ================= UTILS =================
-def log_update(update: Update):
-    try:
-        logger.info("📩 RAW UPDATE:\n%s", json.dumps(update.to_dict(), indent=2))
-    except Exception:
-        pass
-
 def fmt_time(ts):
     if not ts:
         return "N/A"
@@ -63,9 +59,7 @@ def get_context(info):
 
 # ================= COMMANDS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    log_update(update)
     name = update.effective_user.first_name or "there"
-
     await update.message.reply_text(
         f"👋 *Hello {name}!*\n\n"
         "🚆 *Train Live Bot*\n\n"
@@ -84,9 +78,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def add_train(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    log_update(update)
     chat_id = update.effective_chat.id
-
     if not context.args:
         await update.message.reply_text("Usage: /addtrain 12303")
         return
@@ -96,7 +88,6 @@ async def add_train(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if chat_id in tasks:
         tasks[chat_id].cancel()
-
     tasks[chat_id] = asyncio.create_task(track_train(chat_id, context))
 
     msg = await update.message.reply_text(f"🚆 Tracking Train *{train}*", parse_mode="Markdown")
@@ -135,7 +126,6 @@ async def track_train(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
             notify = last_station_code.get(chat_id) != cur_code
             last_station_code[chat_id] = cur_code
 
-            # 🔹 Platform number fix
             platform = "N/A"
             if cur_code:
                 for s in data.get("route", []):
@@ -147,7 +137,6 @@ async def track_train(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
             dist = round(data.get("currentPosition", {}).get("distanceFromOriginKm", 0), 1)
             lastDist = round(data.get("currentPosition", {}).get("distanceFromLastStationKm", 0), 1)
 
-            # Build full message
             text = f"🚆 Train *{train}*\n"
             text += f"📍 Current Station: *{current_loc_name}*\n"
             text += f"📏Total Distance Covered: *{dist} km*\n"
@@ -173,7 +162,7 @@ async def track_train(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
                     f"⏱️ Delay: {delay_from_secs(nxt.get('scheduledDepartureDelaySecs'))}\n"
                 )
 
-            # ✅ Send or Edit full message for this user
+            # Send or edit full message
             if chat_id in message_ids:
                 if text != last_text:
                     await context.bot.edit_message_text(
@@ -192,25 +181,42 @@ async def track_train(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
                 message_ids[chat_id] = msg.message_id
                 last_text = text
 
-            await asyncio.sleep(4)  # interval
-
+            await asyncio.sleep(4)
         except asyncio.CancelledError:
             return
         except Exception:
             logger.exception("Tracking error")
             await asyncio.sleep(20)
 
+# ================= WEBHOOK HANDLER =================
+async def webhook(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message:
+        if update.message.text.startswith("/"):
+            return  # command handled by command handlers
+        else:
+            await update.message.reply_text("Send /addtrain <train_no> to track a train")
+
 # ================= MAIN =================
 def main():
-    logger.info("🚀 Bot Started")
+    logger.info("🚀 Bot Started (Webhook Mode)")
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # Command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("addtrain", add_train))
     app.add_handler(CommandHandler("removetrain", remove_train))
 
-    app.run_polling()
+    # Webhook for other messages
+    app.add_handler(MessageHandler(filters.ALL, webhook))
+
+    # Run webhook on Render
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="webhook",
+        webhook_url=f"{WEBHOOK_URL}/webhook"
+    )
 
 if __name__ == "__main__":
     main()
